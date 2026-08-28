@@ -64,7 +64,7 @@ export default function SandboxHydraulics() {
     wet: 0, err: 0, achieved: 0, volRain: 0, volAdd: 0, heading: 0,
   });
   const [lev, setLev] = useState({ ground: 0, stage: 0, max: 0, d: 0, dmax: 0 });
-  const [narrow, setNarrow] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 940);
   const [openRail, setOpenRail] = useState(null);
   const [showHelp, setShowHelp] = useState(false);
   const [showProv, setShowProv] = useState(false);
