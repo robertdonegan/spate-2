@@ -128,6 +128,11 @@ export default function SandboxHydraulics() {
     el.appendChild(renderer.domElement);
     renderer.domElement.style.display = "block";
     renderer.domElement.style.touchAction = "none";
+    /* setSize(..., false) leaves CSS size alone, so the buffer's dpr-scaled pixel
+       dimensions would otherwise lay the element out at dpr x the container and
+       spill over the right rail. Pin it to the mount instead. */
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
 
     const scene = new THREE.Scene();
     const cam = new THREE.PerspectiveCamera(42, 1, 0.5, 5000);
@@ -1557,7 +1562,7 @@ export default function SandboxHydraulics() {
     width: 292, background: T.panel,
     borderRight: side === "left" ? `1px solid ${T.rule}` : undefined,
     borderLeft: side === "right" ? `1px solid ${T.rule}` : undefined,
-    overflowY: "auto", flexShrink: 0,
+    overflowY: "auto", flexShrink: 0, position: "relative", zIndex: 20,
     ...(narrow ? { position: "absolute", top: 0, bottom: 0, [side]: 0, zIndex: 20, boxShadow: "0 0 40px rgba(0,0,0,0.55)" } : {}),
   });
   const balTone = Math.abs(ro.err) < 1 ? T.good : Math.abs(ro.err) < 5 ? T.buff : T.bad;
@@ -1964,7 +1969,7 @@ export default function SandboxHydraulics() {
 
       <div style={{ flex: "1 1 0", display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
         <div style={{ flex: "1 1 0", position: "relative", minHeight: 0 }}>
-          <div ref={mount} style={{ position: "absolute", inset: 0 }} />
+          <div ref={mount} style={{ position: "absolute", inset: 0, overflow: "hidden" }} />
 
           {lsn.on && (() => {
             const les = LESSONS[lsn.idx];
