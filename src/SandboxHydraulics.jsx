@@ -1558,7 +1558,7 @@ export default function SandboxHydraulics() {
     borderRight: side === "left" ? `1px solid ${T.rule}` : undefined,
     borderLeft: side === "right" ? `1px solid ${T.rule}` : undefined,
     overflowY: "auto", flexShrink: 0,
-    ...(narrow ? { position: "absolute", top: 0, bottom: 0, [side]: 0, zIndex: 20, boxShadow: "0 0 40px rgba(0,0,0,0.55)" } : {}),
+    ...(narrow && side === "left" ? { position: "absolute", top: 0, bottom: 0, left: 0, zIndex: 20, boxShadow: "0 0 40px rgba(0,0,0,0.55)" } : {}),
   });
   const balTone = Math.abs(ro.err) < 1 ? T.good : Math.abs(ro.err) < 5 ? T.buff : T.bad;
 
@@ -2191,9 +2191,6 @@ export default function SandboxHydraulics() {
           <div style={{ font: `400 9.5px/1.3 ${MONO}`, color: T.dim, minWidth: 104 }}>
             running at {ro.achieved < 1 ? ro.achieved.toFixed(1) : Math.round(ro.achieved)}×
           </div>
-          {narrow && (
-            <button className="sh-btn" onClick={() => setOpenRail(openRail === "right" ? null : "right")} style={{ ...btn(openRail === "right"), marginLeft: "auto" }}>Gauges</button>
-          )}
         </div>
 
         <div style={{ borderTop: `1px solid ${T.rule}`, background: T.panel, position: "relative", flexShrink: 0 }}>
@@ -2207,7 +2204,7 @@ export default function SandboxHydraulics() {
         </div>
       </div>
 
-      {(!narrow || openRail === "right") && RightRail}
+      {RightRail}
 
       {showProv && (
         <div onClick={() => setShowProv(false)}
