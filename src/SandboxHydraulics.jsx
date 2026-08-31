@@ -1562,13 +1562,8 @@ export default function SandboxHydraulics() {
     width: 292, background: T.panel,
     borderRight: side === "left" ? `1px solid ${T.rule}` : undefined,
     borderLeft: side === "right" ? `1px solid ${T.rule}` : undefined,
-<<<<<<< HEAD
-    overflowY: "auto", flexShrink: 0,
-    ...(narrow && side === "left" ? { position: "absolute", top: 0, bottom: 0, left: 0, zIndex: 20, boxShadow: "0 0 40px rgba(0,0,0,0.55)" } : {}),
-=======
     overflowY: "auto", flexShrink: 0, position: "relative", zIndex: 20,
     ...(narrow ? { position: "absolute", top: 0, bottom: 0, [side]: 0, zIndex: 20, boxShadow: "0 0 40px rgba(0,0,0,0.55)" } : {}),
->>>>>>> 47bc94e7e7ecdd849a8a2fcf4eac9893d43e4b08
   });
   const balTone = Math.abs(ro.err) < 1 ? T.good : Math.abs(ro.err) < 5 ? T.buff : T.bad;
 
