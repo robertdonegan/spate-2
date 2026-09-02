@@ -5,7 +5,7 @@ export const TOOLS = [
   { id: "orbit", label: "Look" }, { id: "raise", label: "Raise" }, { id: "lower", label: "Lower" },
   { id: "smooth", label: "Smooth" }, { id: "stamp", label: "Stamp" }, { id: "pick", label: "Pick level" },
   { id: "paint", label: "Surface" }, { id: "pour", label: "Pour" }, { id: "drop", label: "Drop float" },
-  { id: "section", label: "Section" }, { id: "bridge", label: "Bridge" },
+  { id: "section", label: "Section" }, { id: "bridge", label: "Bridge" }, { id: "tunnel", label: "Tunnel" },
 ];
 export const MODES = [
   { value: 0, label: "Natural" }, { value: 1, label: "Depth" }, { value: 2, label: "Velocity" },

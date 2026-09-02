@@ -30,6 +30,7 @@ import { LESSONS, ZONE_A, ZONE_B } from "./data/lessons.js";
 
 export default function SandboxHydraulics() {
   const mount = useRef(null);
+  const [glErr, setGlErr] = useState(null);
   const chartRef = useRef(null);
   const simRef = useRef(null);
   const three = useRef({});
@@ -41,23 +42,28 @@ export default function SandboxHydraulics() {
   const floatsRef = useRef(null);
   const unitsRef = useRef({ list: [], prof: {}, seq: 0, dirty: false });
   const unitApi = useRef({});
+  const historyApi = useRef({});
+  const syncUnitsRef = useRef(() => {});
+  const syncTunnelsRef = useRef(() => {});
   const dropRef = useRef(null);
   const seedRef = useRef(null);
   const clearRef = useRef(null);
   const viewportRef = useRef(null);
+  const historyRef = useRef({ undo: [], redo: [] });
+  const [histInfo, setHistInfo] = useState({ canUndo: false, canRedo: false });
 
   const reduced = typeof window !== "undefined" &&
     window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const [cfg, setCfg] = useState({
     playing: false, speed: 60, tool: "orbit", brush: 16, strength: 0.55, landIdx: 4,
-    mode: 0, aep: 4, dur: 1, cc: 0, peaked: true, infScale: 1, roughScale: 1,
-    openB: true, contours: true, wExag: 6, showRain: !reduced, scene: "pluvial",
+    mode: 0, aep: 4, dur: 2, cc: 0, peaked: true, infScale: 1, roughScale: 1,
+    openB: true, contours: true, wExag: 4, showRain: !reduced, scene: "mountain",
     smooth: 2, levels: true, veg: true, flowLines: false, vScale: 1.6, outletOnly: false,
-    units: true, secSpan: 8, secSoffit: 4, secPiers: 1,
+    units: true, secSpan: 8, secSoffit: 4, secPiers: 1, tunDiam: 6,
     floatShape: "duck", floatSize: 4.2, stampZ: 2, capOn: false,
     stageOn: false, stageLevel: 1.4, inflowOn: false, inflowQ: 90, inflowWave: true,
-    tilt: 0.45, tiltFocus: 0.56, tiltBand: 0.34,
+    tilt: 0.2, tiltFocus: 0.56, tiltBand: 0.34,
   });
   const [ro, setRo] = useState({
     t: 0, rain: 0, storage: 0, inf: 0, out: 0, outQ: 0, maxD: 0, maxV: 0,
@@ -107,7 +113,9 @@ export default function SandboxHydraulics() {
     rsRef.current = null;
     refreshTerrainGeometry();
     refreshTerrainStatic();
+    if (three.current.rebuildVeg) three.current.rebuildVeg(700);
     samples.current = { list: [], every: 20, next: 0 };
+    clearHistory();
     setCfg((c) => ({ ...c, scene: id, playing: false, ...sc.defaults }));
     if (three.current.setView) three.current.setView(sc.defaults.view || "oblique");
     drawChart();
@@ -116,12 +124,18 @@ export default function SandboxHydraulics() {
   /* ------------------------------------------------------------- three */
   useEffect(() => {
     const sim = new Sim(N, SIZE);
-    loadScene(sim, "pluvial");
+    loadScene(sim, "mountain");
     computeAO(sim);
     simRef.current = sim;
 
     const el = mount.current;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    } catch (err) {
+      setGlErr((err && err.message) ? err.message : String(err));
+      return;
+    }
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     renderer.setPixelRatio(dpr);
     renderer.setClearColor(new THREE.Color(T.chassis));
@@ -346,7 +360,8 @@ export default function SandboxHydraulics() {
     secLines.renderOrder = 7;
     scene.add(secLines);
 
-    const COL_RIVER = [0.42, 0.86, 0.94], COL_INTERP = [0.82, 0.68, 0.24], COL_BR = [0.95, 0.60, 0.26];
+    const COL_RIVER = [0.42, 0.86, 0.94], COL_INTERP = [0.82, 0.68, 0.24], COL_BR = [0.95, 0.60, 0.26],
+          COL_TUN = [0.85, 0.45, 0.90];
     function writeSectionLines(sim, units, profiles) {
       const pos = secGeo.attributes.position.array;
       const col = secGeo.attributes.aCol.array;
@@ -362,7 +377,7 @@ export default function SandboxHydraulics() {
         const u = units[ui];
         const pr = profiles[u.id];
         if (!pr) continue;
-        const c = u.kind === "bridge" ? COL_BR : u.kind === "interp" ? COL_INTERP : COL_RIVER;
+        const c = u.kind === "bridge" ? COL_BR : u.kind === "interp" ? COL_INTERP : u.kind === "tunnel" ? COL_TUN : COL_RIVER;
         const dx = u.x2 - u.x1, dz = u.z2 - u.z1;
         const step = u.kind === "interp" ? 2 : 1;
         for (let k = 0; k < SEC_NODES - step; k += step) {
@@ -370,6 +385,18 @@ export default function SandboxHydraulics() {
           const t0 = k / (SEC_NODES - 1), t1 = (k + step) / (SEC_NODES - 1);
           put(u.x1 + dx * t0, pr.zb[k] + 0.10, u.z1 + dz * t0,
               u.x1 + dx * t1, pr.zb[k + step] + 0.10, u.z1 + dz * t1, c);
+        }
+        if (u.kind === "tunnel") {
+          /* draw the portal rings so the two ends read clearly */
+          const rr = (u.diam || 6) / 2;
+          for (let k = 0; k < 12; k++) {
+            const a0 = (k / 12) * Math.PI * 2, a1 = ((k + 1) / 12) * Math.PI * 2;
+            put(u.x1 + Math.cos(a0) * rr, pr.zb[0] + 0.10, u.z1 + Math.sin(a0) * rr,
+                u.x1 + Math.cos(a1) * rr, pr.zb[0] + 0.10, u.z1 + Math.sin(a1) * rr, c);
+            put(u.x2 + Math.cos(a0) * rr, pr.zb[SEC_NODES - 1] + 0.10, u.z2 + Math.sin(a0) * rr,
+                u.x2 + Math.cos(a1) * rr, pr.zb[SEC_NODES - 1] + 0.10, u.z2 + Math.sin(a1) * rr, c);
+          }
+          continue;
         }
         for (let k = 0; k < SEC_NODES; k += 8) {
           const t = k / (SEC_NODES - 1);
@@ -601,10 +628,10 @@ export default function SandboxHydraulics() {
           } else if (c.tool === "drop") {
             dropFloat(p.x, p.z);
             drag = null;
-          } else if (c.tool === "section" || c.tool === "bridge") {
+          } else if (c.tool === "section" || c.tool === "bridge" || c.tool === "tunnel") {
             drawUnit = { x1: p.x, z1: p.z, x2: p.x, z2: p.z, kind: c.tool };
             drag = "unit";
-          } else pending = { x: p.x, z: p.z };
+          } else { pushHistory(); pending = { x: p.x, z: p.z }; }
         }
       }
     };
@@ -688,6 +715,13 @@ export default function SandboxHydraulics() {
       if (e.code === "Digit1") setView("plan");
       if (e.code === "Digit2") setView("oblique");
       if (e.code === "Digit3") setView("low");
+      if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
+        e.preventDefault();
+        if (e.shiftKey) doRedo(); else doUndo();
+      } else if ((e.metaKey || e.ctrlKey) && e.code === "KeyY") {
+        e.preventDefault();
+        doRedo();
+      }
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) >= 0) e.preventDefault();
     };
     const onKeyUp = (e) => keys.delete(e.code);
@@ -777,16 +811,21 @@ export default function SandboxHydraulics() {
     function addUnit(kind, x1, z1, x2, z2) {
       const U = unitsRef.current;
       if (U.list.length >= MAX_UNITS) return;
+      pushHistory();
       const c = cfgRef.current;
       const id = "u" + ++U.seq;
       const mid = sampleGround(simRef.current, (x1 + x2) / 2, (z1 + z2) / 2);
       const u = kind === "bridge"
         ? { id, kind: "bridge", name: "Bridge " + U.seq, x1, z1, x2, z2,
             span: c.secSpan, soffit: mid + c.secSoffit, deck: 0.7, piers: c.secPiers, pierW: 1.6, delta: null }
+        : kind === "tunnel"
+        ? { id, kind: "tunnel", name: "Tunnel " + U.seq, x1, z1, x2, z2,
+            diam: c.tunDiam }
         : { id, kind: "river", name: "Section " + U.seq, x1, z1, x2, z2 };
       U.list.push(u);
       U.prof[id] = newProfile();
       if (kind === "bridge") { applyPiers(simRef.current, u); refreshTerrainGeometry(); }
+      if (kind === "tunnel") syncTunnels(simRef.current, U.list);
       U.dirty = true;
       syncUnits();
     }
@@ -794,6 +833,17 @@ export default function SandboxHydraulics() {
       const U = unitsRef.current;
       setUnits(U.list.map((u) => ({ id: u.id, kind: u.kind, name: u.name })));
     }
+    function syncTunnels(sim, units) {
+      if (!sim) return;
+      sim.resetTunnels();
+      for (const u of units) {
+        if (u.kind !== "tunnel") continue;
+        const r = Math.max(0.5, (u.diam || 6) / 2 / sim.dx);
+        sim.addTunnel(u.x1, u.z1, u.x2, u.z2, r);
+      }
+    }
+    syncUnitsRef.current = syncUnits;
+    syncTunnelsRef.current = syncTunnels;
     unitApi.current = {
       addInterp() {
         const U = unitsRef.current;
@@ -819,19 +869,24 @@ export default function SandboxHydraulics() {
         const U = unitsRef.current;
         const i = U.list.findIndex((u) => u.id === id);
         if (i < 0) return;
+        pushHistory();
         const u = U.list[i];
         if (u.kind === "bridge") { removePiers(simRef.current, u); refreshTerrainGeometry(); }
         U.list.splice(i, 1);
         delete U.prof[id];
         U.list = U.list.filter((x) => x.kind !== "interp" || (U.prof[x.pa] && U.prof[x.pb]));
+        syncTunnels(simRef.current, U.list);
         U.dirty = true;
         syncUnits();
       },
       clear() {
         const U = unitsRef.current;
+        if (!U.list.length) return;
+        pushHistory();
         for (const u of U.list) if (u.kind === "bridge") removePiers(simRef.current, u);
         refreshTerrainGeometry();
         U.list = []; U.prof = {}; U.dirty = true;
+        syncTunnels(simRef.current, U.list);
         syncUnits();
       },
       editBridge(id, patch) {
@@ -842,6 +897,14 @@ export default function SandboxHydraulics() {
         Object.assign(u, patch);
         applyPiers(simRef.current, u);
         refreshTerrainGeometry();
+        U.dirty = true;
+      },
+      editTunnel(id, patch) {
+        const U = unitsRef.current;
+        const u = U.list.find((x) => x.id === id);
+        if (!u || u.kind !== "tunnel") return;
+        Object.assign(u, patch);
+        syncTunnels(simRef.current, U.list);
         U.dirty = true;
       },
       read(id) {
@@ -981,7 +1044,14 @@ export default function SandboxHydraulics() {
       for (let a = 0; a < N * N; a++) hr[a] += (src[a] - hr[a]) * ease;
       smoothField(N, hr, s.hs, s.tmpF, c.smooth);
 
-      const hs = s.hs, surf = s.surf;
+      /* Roofs shed rain and never pond, but the blur above happily leaks a
+         neighbouring flooded street's depth up onto a dry rooftop cell —
+         at ×3-6 exaggeration that phantom film reads as the flood washing
+         clean over the building. Buildings are solid: clamp their surface
+         back to bare, dry roof so the water stops at the wall instead of
+         floating above it. */
+      const hs = s.hs, land = s.land, surf = s.surf;
+      for (let a = 0; a < N * N; a++) if (land[a] === 5) hs[a] = 0;
       for (let a = 0; a < N * N; a++) surf[a] = s.z[a] + hs[a] * ex;
       fieldNormals(N, s.dx, surf, wn);
 
@@ -1017,16 +1087,16 @@ export default function SandboxHydraulics() {
 
       floatPts.visible = floats.n > 0;
       if (floats.n > 0) {
-        if (simAdv > 0) floats.update(s, simAdv, ex);
+        if (simAdv > 0) floats.update(s, simAdv, ex, wall);
         const fp = flGeo.attributes.position.array;
         const ft = flGeo.attributes.aTint.array;
         const fs = flGeo.attributes.aStuck.array;
         let live = 0;
         for (let i = 0; i < floats.n; i++) {
           if (floats.gone[i]) continue;
-          fp[live * 3] = floats.x[i];
-          fp[live * 3 + 1] = floats.y[i] + 0.6;
-          fp[live * 3 + 2] = floats.z[i];
+          fp[live * 3] = floats.rx[i];
+          fp[live * 3 + 1] = floats.ry[i] + 0.6;
+          fp[live * 3 + 2] = floats.rz[i];
           ft[live * 3] = floats.tint[i * 3];
           ft[live * 3 + 1] = floats.tint[i * 3 + 1];
           ft[live * 3 + 2] = floats.tint[i * 3 + 2];
@@ -1181,6 +1251,7 @@ export default function SandboxHydraulics() {
       /* ---- 1D units ---- */
       {
         const U = unitsRef.current;
+        let tunCount = 0;
         for (const u of U.list) {
           if (!U.prof[u.id]) U.prof[u.id] = newProfile();
           sampleSection(s, u, U.prof[u.id]);
@@ -1188,7 +1259,10 @@ export default function SandboxHydraulics() {
             const pa = U.prof[u.pa], pb = U.prof[u.pb];
             if (pa && pb) assumedProfile(pa, pb, u.t, U.prof[u.id].zbAssumed);
           }
+          if (u.kind === "tunnel") tunCount++;
         }
+        /* keep the solver's conduit list in step with the drawn tunnels */
+        if (tunCount > 0) syncTunnels(s, U.list);
         secLines.visible = c.units && U.list.length > 0;
         bridges.visible = c.units;
         structMat.uniforms.uTime.value = clockT;
@@ -1338,6 +1412,71 @@ export default function SandboxHydraulics() {
     drawChart();
     // eslint-disable-next-line
   }, [applyScene]);
+
+  /* ------------------------------------------------------------ history */
+  const HISTORY_MAX = 30;
+  function snapshotState() {
+    const s = simRef.current;
+    return {
+      z: s.z.slice(),
+      land: s.land.slice(),
+      h: s.h.slice(),
+      units: JSON.parse(JSON.stringify(unitsRef.current.list)),
+      prof: JSON.parse(JSON.stringify(unitsRef.current.prof)),
+      seq: unitsRef.current.seq,
+    };
+  }
+  function restoreState(snap) {
+    const s = simRef.current;
+    if (!s || !snap) return;
+    s.z.set(snap.z);
+    s.land.set(snap.land);
+    s.h.set(snap.h);
+    s.syncLand();
+    const U = unitsRef.current;
+    U.list = JSON.parse(JSON.stringify(snap.units));
+    U.prof = JSON.parse(JSON.stringify(snap.prof));
+    U.seq = snap.seq;
+    U.dirty = true;
+    syncUnitsRef.current();
+    syncTunnelsRef.current(s, U.list);
+    rsRef.current = null;
+    computeAO(s);
+    refreshTerrainGeometry();
+    refreshTerrainStatic();
+    if (three.current.rebuildVeg) three.current.rebuildVeg(700);
+    if (three.current.rebuildBridges) three.current.rebuildBridges();
+  }
+  function pushHistory() {
+    const h = historyRef.current;
+    h.undo.push(snapshotState());
+    if (h.undo.length > HISTORY_MAX) h.undo.shift();
+    h.redo = [];
+    setHistInfo({ canUndo: h.undo.length > 0, canRedo: false });
+  }
+  function clearHistory() {
+    historyRef.current = { undo: [], redo: [] };
+    setHistInfo({ canUndo: false, canRedo: false });
+  }
+  function doUndo() {
+    const h = historyRef.current;
+    if (!h.undo.length) return;
+    const prev = h.undo.pop();
+    h.redo.push(snapshotState());
+    if (h.redo.length > HISTORY_MAX) h.redo.shift();
+    restoreState(prev);
+    setHistInfo({ canUndo: h.undo.length > 0, canRedo: h.redo.length > 0 });
+  }
+  function doRedo() {
+    const h = historyRef.current;
+    if (!h.redo.length) return;
+    const next = h.redo.pop();
+    h.undo.push(snapshotState());
+    if (h.undo.length > HISTORY_MAX) h.undo.shift();
+    restoreState(next);
+    setHistInfo({ canUndo: h.undo.length > 0, canRedo: h.redo.length > 0 });
+  }
+  historyApi.current = { undo: doUndo, redo: doRedo };
 
   function refreshTerrainGeometry() {
     const s = simRef.current, g = three.current.tGeo, sk = three.current.skGeo;
@@ -1601,6 +1740,18 @@ export default function SandboxHydraulics() {
       <Panel title="Sculpt">
         <Seg items={TOOLS.map((t) => ({ value: t.id, label: t.label }))} value={cfg.tool}
           onChange={(v) => set({ tool: v })} cols={3} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
+          <button className="sh-btn" onClick={() => historyApi.current.undo && historyApi.current.undo()}
+            disabled={!histInfo.canUndo} title="Undo (Ctrl/Cmd+Z)"
+            style={{ ...btn(false), padding: "7px 6px", opacity: histInfo.canUndo ? 1 : 0.4, cursor: histInfo.canUndo ? "pointer" : "default" }}>
+            Undo
+          </button>
+          <button className="sh-btn" onClick={() => historyApi.current.redo && historyApi.current.redo()}
+            disabled={!histInfo.canRedo} title="Redo (Ctrl/Cmd+Shift+Z)"
+            style={{ ...btn(false), padding: "7px 6px", opacity: histInfo.canRedo ? 1 : 0.4, cursor: histInfo.canRedo ? "pointer" : "default" }}>
+            Redo
+          </button>
+        </div>
         <div style={{ height: 12 }} />
         <Slider label="Brush radius" value={cfg.brush} min={4} max={60} step={1} unit="m" onChange={(v) => set({ brush: v })} />
         <Slider label="Brush strength" value={cfg.strength} min={0.1} max={1.5} step={0.05} onChange={(v) => set({ strength: v })} fmt={f2} />
@@ -1808,8 +1959,9 @@ export default function SandboxHydraulics() {
 
       <Panel title="1D network units" note={units.length + " / " + MAX_UNITS}>
         <div style={{ font: `400 10px/1.5 ${SANS}`, color: T.dim, marginBottom: 9 }}>
-          Pick the Section or Bridge tool and drag a line across the channel. A section integrates
-          the flow crossing it, exactly as a 1D unit does, but from real 2D ground.
+          Pick the Section, Bridge or Tunnel tool and drag a line across the channel. A section
+          integrates the flow crossing it, exactly as a 1D unit does, but from real 2D ground. A
+          tunnel carries water between its two portals, straight through the ridge or dam between.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3, marginBottom: 8 }}>
           <button className="sh-btn" onClick={() => { const n = unitApi.current.addInterp && unitApi.current.addInterp(); setDropMsg(n ? n + " interpolates added." : "Place two sections first."); }}
@@ -1823,7 +1975,7 @@ export default function SandboxHydraulics() {
           <div style={{ display: "grid", gap: 2 }}>
             {units.map((u) => {
               const on = u.id === selUnit;
-              const col = u.kind === "bridge" ? T.signal : u.kind === "interp" ? T.buff : T.water;
+              const col = u.kind === "bridge" ? T.signal : u.kind === "interp" ? T.buff : u.kind === "tunnel" ? "#C077E8" : T.water;
               return (
                 <div key={u.id} style={{ display: "flex", gap: 3 }}>
                   <button className="sh-btn" onClick={() => setSelUnit(on ? null : u.id)}
@@ -1849,12 +2001,19 @@ export default function SandboxHydraulics() {
       </Panel>
 
       {selUnit && unitRead && (
-        <Panel title={unitRead.kind === "bridge" ? "Bridge unit" : unitRead.kind === "interp" ? "Interpolate unit" : "Cross-section unit"} note={unitRead.name}>
+        <Panel title={unitRead.kind === "bridge" ? "Bridge unit" : unitRead.kind === "interp" ? "Interpolate unit" : unitRead.kind === "tunnel" ? "Tunnel" : "Cross-section unit"} note={unitRead.name}>
           <canvas ref={secCanvas} style={{ display: "block", width: "100%", height: 116, border: `1px solid ${T.rule}`, borderRadius: 2 }} />
           {unitRead.kind === "interp" && (
             <div style={{ font: `400 9.5px/1.45 ${SANS}`, color: T.buff, marginTop: 7 }}>
               Dashed line is the bed a 1D interpolate assumes by blending its two neighbours. Solid
               line is the ground actually there. The gap between them is interpolation error.
+            </div>
+          )}
+          {unitRead.kind === "tunnel" && (
+            <div style={{ font: `400 9.5px/1.45 ${SANS}`, color: "#C077E8", marginTop: 7 }}>
+              The conduit carries water between the two outlined portals, letting it pass straight
+              through a ridge, embankment or dam that the terrain itself would hold back. Flow runs
+              from the higher water level to the lower at an orifice-like speed.
             </div>
           )}
           <div style={{ marginTop: 10 }}>
@@ -1912,6 +2071,19 @@ export default function SandboxHydraulics() {
               </div>
             </div>
           )}
+
+          {unitRead.kind === "tunnel" && (
+            <div style={{ marginTop: 11, paddingTop: 10, borderTop: `1px solid ${T.rule}` }}>
+              <Eyebrow style={{ marginBottom: 8 }}>Conduit</Eyebrow>
+              <Slider label="Portal diameter" value={unitRead.u && unitRead.u.diam !== undefined ? unitRead.u.diam : 6} min={2} max={16} step={0.5} unit="m"
+                onChange={(v) => unitApi.current.editTunnel(selUnit, { diam: v })} fmt={f1} />
+              <div style={{ font: `400 9.5px/1.5 ${SANS}`, color: T.dim, marginTop: 5 }}>
+                The conduit is real to the solver: each step it moves water from the higher portal to
+                the lower one at an orifice speed. Place one portal in the water behind the ridge or
+                dam and the other somewhere lower on the far side, and the stored depth will drive it.
+              </div>
+            </div>
+          )}
         </Panel>
       )}
 
@@ -1953,6 +2125,21 @@ export default function SandboxHydraulics() {
       position: "relative", width: "100%", display: "flex",
       background: T.chassis, color: T.ink, fontFamily: SANS, overflow: "hidden",
     }}>
+      {glErr && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 32, background: T.chassis, textAlign: "center",
+        }}>
+          <div style={{ maxWidth: 520, lineHeight: 1.6, color: T.ink }}>
+            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>WebGL is not available here</div>
+            <div style={{ fontSize: 13, color: T.muted }}>
+              This sandbox needs a WebGL-capable browser to draw the terrain. Enable hardware
+              acceleration in your browser settings (or try another browser), then reload the page.
+            </div>
+            <div style={{ fontSize: 11, color: T.dim, marginTop: 10, wordBreak: "break-word" }}>{glErr}</div>
+          </div>
+        </div>
+      )}
       <style>{`
         .sh-root{height:100vh;height:100dvh;max-height:100dvh}
         .sh-scroll::-webkit-scrollbar{width:8px}

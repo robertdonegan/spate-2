@@ -43,8 +43,37 @@ export class Sim {
     this.vol0 = 0;
     this.stageCells = [];
     for (let i = 0; i < n; i++) this.stageCells.push((n - 1) * n + i);
+    this.tunnels = [];
+    this.tunnelDirty = true;
     this.reset();
   }
+
+  /* A tunnel is a conduit that carries water between two portals, letting it
+     pass through a ridge, embankment or dam the land itself hides. Portals
+     are circular openings of radius r (in grid cells) centred on (wx0,wz0)
+     and (wx1,wz1) in world metres. */
+  addTunnel(wx0, wz0, wx1, wz1, r) {
+    const n = this.N, size = this.size;
+    const cellOf = (wx, wz) => {
+      const gi = (wx / size + 0.5) * (n - 1);
+      const gj = (wz / size + 0.5) * (n - 1);
+      const i0 = Math.max(0, Math.floor(gi - r)), i1 = Math.min(n - 1, Math.ceil(gi + r));
+      const j0 = Math.max(0, Math.floor(gj - r)), j1 = Math.min(n - 1, Math.ceil(gj + r));
+      const cells = [];
+      for (let j = j0; j <= j1; j++)
+        for (let i = i0; i <= i1; i++) {
+          const d = Math.hypot(i - gi, j - gj);
+          if (d <= r) cells.push(j * n + i);
+        }
+      return cells;
+    };
+    this.tunnels.push({
+      x0: wx0, z0: wz0, x1: wx1, z1: wz1, r,
+      cells0: cellOf(wx0, wz0), cells1: cellOf(wx1, wz1),
+    });
+  }
+
+  resetTunnels() { this.tunnels = []; }
   syncLand() {
     for (let a = 0; a < this.N * this.N; a++) {
       const L = LAND[this.land[a]];
@@ -139,6 +168,35 @@ export class Sim {
           const vy = (0.5 * (inY + qy[a])) / d;
           vel[a] = Math.sqrt(vx * vx + vy * vy);
         } else vel[a] = 0;
+      }
+    }
+
+    /* ---- tunnels ------------------------------------------------------  */
+    /* Each conduit moves water from the higher portal to the lower one at an
+       orifice-like speed, capped so a portal never drains below its floor. */
+    for (const t of this.tunnels) {
+      const cA = t.cells0, cB = t.cells1;
+      let wA = 0, wB = 0;
+      for (const a of cA) wA += z[a] + h[a];
+      for (const a of cB) wB += z[a] + h[a];
+      wA /= cA.length; wB /= cB.length;
+      const head = wA - wB;
+      if (Math.abs(head) < 1e-4) continue;
+      const src = head > 0 ? cA : cB;
+      const dst = head > 0 ? cB : cA;
+      const hh = Math.abs(head);
+      const q = 0.62 * Math.sqrt(2 * G * hh);   /* orifice velocity, m/s */
+      const dPer = Math.min(q * dt, 0.55 * hh);  /* depth moved per source cell */
+      let moved = 0;
+      for (const a of src) {
+        let take = h[a] * 0.9;
+        if (take > dPer) take = dPer;
+        if (take < 0) continue;
+        h[a] -= take; moved += take;
+      }
+      if (moved > 0) {
+        const add = moved / dst.length;
+        for (const a of dst) h[a] += add;
       }
     }
 

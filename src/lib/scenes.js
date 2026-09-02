@@ -1,6 +1,7 @@
 /* Ready-made catchments. */
 import { fbm, gauss, sstep } from "./math.js";
 
+
 export const SCENES = [
   {
     id: "teaching", group: "ready", name: "Catchment", title: "One valley, one outlet",
@@ -20,11 +21,136 @@ export const SCENES = [
         let lc = 0;
         if (dMeadow < 1.05) lc = 1;
         if (dVill < 1.05) {
+          /* long, narrow terraces rather than square huts: a coarser period
+             along the street and a finer one across it, with asymmetric
+             footprint fractions so each block reads as a rectangle */
           const gu = (u * 14) % 1, gv = (v * 14) % 1;
           const du = Math.min(gu, 1 - gu), dv2 = Math.min(gv, 1 - gv);
-          if (du > 0.26 && dv2 > 0.26) { lc = 5; e += 2.6; } else lc = 4;
+          if (du > 0.20 && dv2 > 0.32) { lc = 5; e += 6.0; } else lc = 4;
         }
         z[a] = e; land[a] = lc; h[a] = 0;
+      }
+    },
+  },
+  {
+    id: "mountain", group: "ready", name: "Mountains", title: "Sub-catchments to a basin",
+    blurb: "A jagged alpine range: five knife-edge ridges split the ground into sub-catchments that plunge toward a collecting basin. Build a dam across the outlet, or drive a tunnel through a ridge to run water from one valley to the next.",
+    defaults: { aep: 4, dur: 2, peaked: true, openB: true, outletOnly: true, stageOn: false, inflowOn: false, wExag: 3, view: "oblique" },
+    build(s) {
+      const n = s.N, { z, land, h } = s;
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const a = j * n + i, u = i / (n - 1), v = j / (n - 1);
+        /* overall fall to the south, from a high alpine head down to the basin */
+        let e = (1 - v) * 16;
+        /* warp the ridge coordinate so the five crests wander like a real
+           range instead of sitting on perfectly straight, evenly spaced
+           lines; the channel network below still uses the true u so the
+           drainage pattern stays clean */
+        const warp = fbm(u * 3.2 + 4.1, v * 3.2 - 1.7) * 0.045 + fbm(u * 7.5, v * 7.5) * 0.015;
+        const uw = u + warp;
+        /* five finger ridges running north-south: the sub-catchment walls.
+           A steep exponent carves narrow, knife-edge summits with wide low
+           cols between them, and a slow second sine varies each summit's
+           height so the skyline reads as jagged peaks rather than a single
+           repeating wall. */
+        const ridgeShape = Math.pow(Math.abs(Math.sin(uw * Math.PI * 5 + 0.25)), 4.5);
+        const summits = 0.5 + 0.5 * Math.sin(uw * Math.PI * 1.7 + 0.8) * Math.sin(uw * Math.PI * 0.6 - 0.4);
+        /* a slow along-ridge undulation so no two summits along the same
+           crest sit at quite the same height */
+        const crestJitter = 0.75 + 0.25 * Math.sin(v * Math.PI * 5.3 + uw * 11.0);
+        const ridge = 95 * Math.pow(1 - v, 0.42) * ridgeShape * summits * crestJitter;
+        e += ridge;
+        /* fine rock texture riding the upper ridges, breaking summits into
+           cols, spurs, gullies and crags at three scales so no slope reads
+           as a smooth, unbroken face */
+        e += fbm(u * 12, v * 12) * 7.0 * sstep(8, 40, ridge);
+        e += fbm(u * 28, v * 28) * 3.2 * sstep(10, 45, ridge);
+        e += fbm(u * 60, v * 60) * 1.3 * sstep(20, 55, ridge);
+        /* a meandering stem channel that gathers every valley toward the basin,
+           carved noticeably deeper than before into a real gorge. Ridges
+           and rock texture are added above, so a fixed-depth cut can leave
+           a sill wherever the wandering channel crosses a tall ridge line —
+           blending the invert onto a ridge-free monotonic floor instead of
+           subtracting a fixed depth guarantees the bed always keeps falling,
+           however tall the terrain either side of it happens to be. */
+        const fall = (1 - v) * 16;
+        const stem = 0.5 + 0.13 * Math.sin(v * Math.PI * 2.1 + 0.5);
+        const ds = Math.abs(u - stem);
+        /* the invert weight is a flat-bottomed trapezoid, not a narrow gaussian
+           peak: a genuinely smooth, several-cell-wide bed sits fully on the
+           monotonic floor (weight 1), with the ridge/rock texture only
+           reappearing on the valley walls beyond it. A pure gaussian peaks
+           at weight 1 for a single centre cell and lets the noisy terrain
+           bleed back in a cell or two either side, leaving a bed of tiny
+           grid-scale potholes that trap water into a chain of isolated
+           puddles instead of a smoothly flowing streambed. */
+        const stemFloor = fall - (16.0 + 11.0 * v);
+        e += (stemFloor - e) * (1 - sstep(0.03, 0.09, ds));
+        /* two tributaries riding separate valleys down into the stem */
+        const trib1 = 0.15 + 0.13 * (1 - v);
+        const trib1Floor = fall - 10.0 * (1 - v);
+        e += (trib1Floor - e) * (1 - sstep(0.016, 0.045, Math.abs(u - trib1)));
+        const trib2 = 0.82 - 0.10 * (1 - v);
+        const trib2Floor = fall - 8.0 * (1 - v);
+        e += (trib2Floor - e) * (1 - sstep(0.015, 0.042, Math.abs(u - trib2)));
+        /* the collecting basin just upstream of the south edge, where a dam
+           across the ridge will hold a reservoir back */
+        e -= 6.0 * gauss(Math.hypot((u - 0.5) / 0.30, (v - 0.88) / 0.10), 0.95);
+        e += fbm(u * 6, v * 6) * 0.8;
+
+        let lc;
+        if (e > 60) lc = 3;                     /* bare rock and scree above the treeline */
+        else if (ridge > 22) lc = 2;             /* dense scrub on the spurs */
+        else if (ridge > 6) lc = 1;              /* grazed slopes */
+        else if (ds < 0.06) lc = 3;              /* worn channel bed */
+        else lc = 0;                             /* valley floor meadow */
+
+        z[a] = e; land[a] = lc;
+        /* the river already threads the full length of the stem, from the
+           head of the valley down to the basin, so there is a continuous
+           line of water to see rather than one that starts only halfway down */
+        h[a] = (ds < 0.035) ? 0.5 : 0;
+      }
+    },
+  },
+  {
+    id: "confluence", group: "ready", name: "Confluence", title: "Two catchments, one junction",
+    blurb: "A west and an east tributary drain their own ground and meet at a single junction before the combined flow leaves south. Run the same storm over both and watch whether the peaks arrive together or miss each other, and how much higher the water sits just below the junction than in either arm above it.",
+    defaults: { aep: 4, dur: 2, peaked: true, openB: true, outletOnly: true, stageOn: false, inflowOn: false, wExag: 4, view: "oblique" },
+    build(s) {
+      const n = s.N, { z, land, h } = s;
+      const MERGE = 0.55;
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const a = j * n + i, u = i / (n - 1), v = j / (n - 1);
+        let e = (1 - v) * 18 + fbm(u * 5, v * 5) * 0.5;
+        /* the drainage divide between the two upper catchments: a broad
+           spur that fades out as the valleys close in on the junction */
+        const divide = Math.max(0, 1 - v / MERGE);
+        e += 7.0 * divide * gauss((u - 0.5) / 0.16, 1.0);
+        let ds, lc;
+        if (v < MERGE) {
+          /* two separate valleys, each carrying its own tributary in from
+             the north edge and swinging toward the junction */
+          const t = v / MERGE;
+          const chW = 0.20 + 0.30 * t;
+          const chE = 0.80 - 0.30 * t;
+          const dsW = Math.abs(u - chW), dsE = Math.abs(u - chE);
+          ds = Math.min(dsW, dsE);
+          e -= 5.5 * gauss(dsW, 0.045) + 5.5 * gauss(dsE, 0.045);
+          lc = ds < 0.05 ? 3 : divide > 0.35 && Math.abs(u - 0.5) < 0.18 ? 2 : 1;
+        } else {
+          /* the combined stem, now carrying both arms toward the outlet */
+          const t = (v - MERGE) / (1 - MERGE);
+          const chM = 0.5 + 0.05 * Math.sin(t * Math.PI * 2.2 + 0.3);
+          ds = Math.abs(u - chM);
+          e -= (7.0 + 5.0 * t) * gauss(ds, 0.05);
+          lc = ds < 0.06 ? 3 : 0;
+        }
+        z[a] = e; land[a] = lc;
+        /* both arms carry a steady baseflow all the way from their source
+           down to the junction, so the confluence reads as two real rivers
+           meeting rather than one arm appearing only near the join */
+        h[a] = (ds < 0.035) ? 0.4 : 0;
       }
     },
   },
@@ -39,11 +165,11 @@ export const SCENES = [
         let e = (1 - v) * 0.95 + fbm(u * 6, v * 6) * 0.09;
         e -= 0.42 * gauss(Math.hypot(u - 0.30, v - 0.64), 0.075);
         e -= 0.34 * gauss(Math.hypot(u - 0.72, v - 0.33), 0.065);
-        const gu = (u * 6) % 1, gv = (v * 6) % 1;
+        const gu = (u * 8) % 1, gv = (v * 5) % 1;
         const du = Math.min(gu, 1 - gu), dv = Math.min(gv, 1 - gv);
         let lc;
         if (du < 0.10 || dv < 0.10) { lc = 4; e -= 0.13; }
-        else if (du > 0.24 && dv > 0.24) { lc = 5; e += 3.6; }
+        else if (du > 0.18 && dv > 0.30) { lc = 5; e += 13.0; }
         else lc = 0;
         z[a] = e; land[a] = lc; h[a] = 0;
       }
@@ -89,14 +215,43 @@ export const SCENES = [
         let lc = chan > 0.6 ? 3 : Math.abs(dist - 0.098) < 0.035 ? 0 : 1;
         if (u > 0.08 && u < 0.44 && v > 0.22 && v < 0.80) {
           e -= 0.05;
-          const gu = (((u - 0.08) / 0.36) * 5) % 1, gv = (((v - 0.22) / 0.58) * 5) % 1;
+          const gu = (((u - 0.08) / 0.36) * 4) % 1, gv = (((v - 0.22) / 0.58) * 7) % 1;
           const du = Math.min(gu, 1 - gu), dv = Math.min(gv, 1 - gv);
           if (du < 0.11 || dv < 0.11) { lc = 4; e -= 0.10; }
-          else if (du > 0.25 && dv > 0.25) { lc = 5; e += 3.4; }
+          else if (du > 0.20 && dv > 0.32) { lc = 5; e += 13.0; }
           else lc = 0;
         }
         z[a] = e; land[a] = lc;
         const wl = fpBase - 0.8;
+        h[a] = e < wl ? wl - e : 0;
+        if (j < 8 && chan > 0.45) s.inflowCells.push(a);
+      }
+    },
+  },
+  {
+    id: "culvert", group: "ready", name: "Culvert crossing", title: "A road embankment across the valley",
+    blurb: "A meandering reach is crossed by a raised road that carries the water through one narrow bridge opening. Watch the level build up on the upstream side as the flood wave tries to squeeze through the gap, and see how much afflux it takes before the road itself goes under.",
+    defaults: { aep: 0, dur: 3, peaked: true, openB: true, stageOn: true, stageLevel: 1.0, inflowOn: true, inflowQ: 60, inflowWave: true, wExag: 3, view: "oblique" },
+    build(s) {
+      const n = s.N, { z, land, h } = s;
+      s.inflowCells = [];
+      const XING = 0.56;
+      const gapU = 0.5 + 0.14 * Math.sin(XING * Math.PI * 1.6 + 0.4);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const a = j * n + i, u = i / (n - 1), v = j / (n - 1);
+        const cx = 0.5 + 0.14 * Math.sin(v * Math.PI * 1.6 + 0.4);
+        const dist = Math.abs(u - cx);
+        const chan = 1 - sstep(0.036, 0.078, dist);
+        const fpBase = 2.6 + (1 - v) * 0.5;
+        let e = fpBase + fbm(u * 7, v * 7) * 0.18 - 2.0 * chan;
+        /* the embanked crossing: a solid causeway across the floodplain,
+           open only where a narrow bridge spans the channel itself */
+        const atXing = gauss(v - XING, 0.018);
+        const gapOpen = sstep(0.045, 0.085, Math.abs(u - gapU));
+        e += 3.2 * atXing * gapOpen;
+        let lc = chan > 0.6 ? 3 : atXing > 0.5 && gapOpen > 0.5 ? 4 : 1;
+        z[a] = e; land[a] = lc;
+        const wl = fpBase - 0.6;
         h[a] = e < wl ? wl - e : 0;
         if (j < 8 && chan > 0.45) s.inflowCells.push(a);
       }
@@ -122,10 +277,10 @@ export const SCENES = [
           e -= 0.80 * gauss(v - 0.28, 0.018);
           lc = dune > 0.9 ? 3 : 1;
           if (u > 0.54 && u < 0.86 && v > 0.08 && v < 0.32) {
-            const gu = (((u - 0.54) / 0.32) * 4) % 1, gv = (((v - 0.08) / 0.24) * 3) % 1;
+            const gu = (((u - 0.54) / 0.32) * 3) % 1, gv = (((v - 0.08) / 0.24) * 5) % 1;
             const du = Math.min(gu, 1 - gu), dv = Math.min(gv, 1 - gv);
             if (du < 0.12 || dv < 0.12) { lc = 4; e -= 0.08; }
-            else if (du > 0.26 && dv > 0.26) { lc = 5; e += 3.2; }
+            else if (du > 0.20 && dv > 0.32) { lc = 5; e += 12.0; }
             else lc = 0;
           }
         }

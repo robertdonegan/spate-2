@@ -9,6 +9,16 @@ export class Floats {
     this.x = new Float32Array(FLOAT_MAX);
     this.z = new Float32Array(FLOAT_MAX);
     this.y = new Float32Array(FLOAT_MAX);
+    /* the display position lags a little behind the physics position (see
+       update() below): at high time-multipliers a single rendered frame can
+       cover many seconds of simulated time, so the raw physics position
+       would otherwise leap across the screen every frame instead of
+       gliding. Easing the drawn point toward it over wall-clock time keeps
+       the motion visually smooth at any speed without touching the
+       trajectory the physics itself follows. */
+    this.rx = new Float32Array(FLOAT_MAX);
+    this.rz = new Float32Array(FLOAT_MAX);
+    this.ry = new Float32Array(FLOAT_MAX);
     this.vx = new Float32Array(FLOAT_MAX);
     this.vz = new Float32Array(FLOAT_MAX);
     this.tint = new Float32Array(FLOAT_MAX * 3);
@@ -22,15 +32,21 @@ export class Floats {
     if (this.n >= FLOAT_MAX) return;
     const i = this.n++;
     this.x[i] = x; this.z[i] = z; this.y[i] = 0;
+    this.rx[i] = x; this.rz[i] = z; this.ry[i] = 0;
     this.vx[i] = 0; this.vz[i] = 0;
     this.tint[i * 3] = r; this.tint[i * 3 + 1] = g; this.tint[i * 3 + 2] = b;
     this.stuck[i] = 0; this.gone[i] = 0; this.dist[i] = 0;
   }
-  update(sim, dtSim, exag) {
+  update(sim, dtSim, exag, wall) {
     const half = sim.size / 2;
     const f = this._f;
     let steps = Math.min(24, Math.max(1, Math.ceil(dtSim / 0.5)));
     const dt = dtSim / steps;
+    /* wall is the real elapsed time this rendered frame took, independent of
+       how much simulated time dtSim just covered; the display-position ease
+       below runs on that real-time clock so it settles at the same visual
+       rate whatever the chosen speed multiplier. */
+    const dk = 1 - Math.exp(-(wall > 0 ? wall : dtSim) / 0.15);
     for (let i = 0; i < this.n; i++) {
       if (this.gone[i]) continue;
       for (let s = 0; s < steps; s++) {
@@ -49,6 +65,9 @@ export class Floats {
       }
       sampleFlow(sim, this.x[i], this.z[i], f);
       this.y[i] = sampleGround(sim, this.x[i], this.z[i]) + f.d * exag;
+      this.rx[i] += (this.x[i] - this.rx[i]) * dk;
+      this.rz[i] += (this.z[i] - this.rz[i]) * dk;
+      this.ry[i] += (this.y[i] - this.ry[i]) * dk;
     }
   }
 }
@@ -89,23 +108,36 @@ export class Streaks {
     this.life[i] = -1;
     return false;
   }
-  update(sim, dtSim, exag) {
+  update(sim, dtSim, _exag) {
     const f = this._f, t = this.trail;
-    const dt = Math.min(dtSim, 1.2);
+    /* At high time-multipliers dtSim can span several seconds in one
+       rendered frame. Taking that as a single straight-line step made each
+       trail segment leap past bends in the flow and pop from frame to
+       frame; splitting it into a handful of shorter sub-steps (same idea as
+       the float update above) keeps each segment short enough to follow the
+       real path and reads as smooth, continuous motion at any speed. */
+    const stepLen = 0.35;
+    const steps = Math.min(t - 1, Math.max(1, Math.ceil(dtSim / stepLen)));
+    const dt = Math.min(dtSim, steps * stepLen) / steps;
     for (let i = 0; i < this.count; i++) {
       if (this.life[i] < 0) { if (this.rnd() < 0.10) this.seed(sim, i); continue; }
-      this.life[i] -= dt;
-      const b = i * t, hd = this.head[i];
-      let x = this.px[b + hd], z = this.pz[b + hd];
-      sampleFlow(sim, x, z, f);
-      if (f.d < 0.012 || this.life[i] <= 0) { this.life[i] = -1; continue; }
-      x += f.x * dt; z += f.z * dt;
-      const nh = (hd + 1) % t;
-      this.head[i] = nh;
-      this.px[b + nh] = x; this.pz[b + nh] = z;
-      this.py[b + nh] = sampleGround(sim, x, z) + f.d * exag + 0.02;
-      this.sp[b + nh] = Math.sqrt(f.x * f.x + f.z * f.z);
-      if (this.filled[i] < t) this.filled[i]++;
+      for (let s = 0; s < steps; s++) {
+        this.life[i] -= dt;
+        const b = i * t, hd = this.head[i];
+        let x = this.px[b + hd], z = this.pz[b + hd];
+        sampleFlow(sim, x, z, f);
+        if (f.d < 0.012 || this.life[i] <= 0) { this.life[i] = -1; break; }
+        x += f.x * dt; z += f.z * dt;
+        const nh = (hd + 1) % t;
+        this.head[i] = nh;
+        this.px[b + nh] = x; this.pz[b + nh] = z;
+        /* Flow lines trace direction across the ground, not the exaggerated
+           water surface: keep them at a fixed clearance above the terrain so
+           they read flat and don't bob up and down as depth fluctuates. */
+        this.py[b + nh] = sampleGround(sim, x, z) + 0.05;
+        this.sp[b + nh] = Math.sqrt(f.x * f.x + f.z * f.z);
+        if (this.filled[i] < t) this.filled[i]++;
+      }
     }
   }
   writeGeometry(pos, alp, spd) {
